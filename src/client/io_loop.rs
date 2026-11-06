@@ -1697,6 +1697,18 @@ impl<T: InvokeUiSession> Remote<T> {
         if let Ok(msg_in) = Message::parse_from_bytes(&data) {
             match msg_in.union {
                 Some(message::Union::VideoFrame(vf)) => {
+                    // PhoneKB: keyboard-only sessions drop frames without decoding them. No video
+                    // thread means no decode fps, so this session never asks the peer to lower
+                    // the fps shared with the other viewers. Virtual display and privacy mode
+                    // toggles are skipped as well.
+                    if self.handler.lc.read().unwrap().keyboard_only {
+                        if !self.first_frame {
+                            self.first_frame = true;
+                            self.handler.close_success();
+                        }
+                        let _ = vf;
+                        return true;
+                    }
                     if !self.first_frame {
                         self.first_frame = true;
                         self.handler.close_success();

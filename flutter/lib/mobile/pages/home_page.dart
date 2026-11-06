@@ -8,6 +8,7 @@ import '../../common/widgets/chat_page.dart';
 import '../../models/platform_model.dart';
 import '../../models/state_model.dart';
 import 'connection_page.dart';
+import 'keyboard_page.dart';
 
 abstract class PageShape extends Widget {
   final String title = "";
@@ -51,6 +52,8 @@ class HomePageState extends State<HomePage> {
       _pages.add(ConnectionPage(
         appBarActions: [],
       ));
+      // PhoneKB: use the phone as a keyboard for a PC another device is showing.
+      _pages.add(KeyboardHomePage());
     }
     if (isAndroid && !bind.isOutgoingOnly()) {
       _chatPageTabIndex = _pages.length;

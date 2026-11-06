@@ -4125,6 +4125,7 @@ class FFI {
     int? display,
     List<int>? displays,
     String loginMethod = '',
+    bool keyboardOnly = false,
   }) {
     closed = false;
     if (isMobile) mobileReset();
@@ -4172,6 +4173,11 @@ class FFI {
         connToken: connToken,
         loginMethod: loginMethod,
       );
+      // PhoneKB: must be set before `sessionStart()`, the login is built from it.
+      if (keyboardOnly) {
+        bind.sessionSetKeyboardOnlySync(
+            sessionId: sessionId, keyboardOnly: true);
+      }
     } else if (display != null) {
       if (displays == null) {
         debugPrint(

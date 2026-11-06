@@ -2885,6 +2885,10 @@ pub struct LoginConfigHandler {
     pub enable_trusted_devices: bool,
     pub record_state: bool,
     pub record_permission: bool,
+    /// PhoneKB: keyboard-only session. The session only sends key events: it drops video/audio,
+    /// and never sends options that change the shared stream (fps, quality), the resolution,
+    /// privacy mode or virtual displays, so it does not disturb other viewers of the same peer.
+    pub keyboard_only: bool,
 }
 
 impl Deref for LoginConfigHandler {
@@ -2956,6 +2960,8 @@ impl LoginConfigHandler {
 
         self.id = id;
         self.conn_type = conn_type;
+        // PhoneKB: every new session starts as a normal one; the keyboard page sets it after adding.
+        self.keyboard_only = false;
         self.login_method = Default::default();
         if !login_method.is_empty() && !self.set_login_method(login_method) {
             log::warn!("Failed to initialize login method: {}", login_method);
@@ -3369,6 +3375,14 @@ impl LoginConfigHandler {
             || self.conn_type.eq(&ConnType::FILE_TRANSFER)
         {
             return None;
+        }
+        if self.keyboard_only {
+            // PhoneKB: no audio, and no image quality / fps / cursor / privacy options,
+            // because those are shared with the other viewers of this peer.
+            let mut msg = OptionMessage::new();
+            msg.disable_audio = BoolOption::Yes.into();
+            msg.supported_decoding = MessageField::some(self.get_supported_decoding());
+            return Some(msg);
         }
         let mut msg = OptionMessage::new();
         if self.conn_type.eq(&ConnType::TERMINAL) {

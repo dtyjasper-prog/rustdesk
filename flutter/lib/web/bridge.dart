@@ -234,6 +234,12 @@ class RustdeskImpl {
         ]));
   }
 
+  // PhoneKB: keyboard-only sessions are Android-only; nothing to do on web.
+  bool sessionSetKeyboardOnlySync(
+      {required UuidValue sessionId, required bool keyboardOnly, dynamic hint}) {
+    return false;
+  }
+
   Future<void> sessionClose({required UuidValue sessionId, dynamic hint}) {
     return Future(() => js.context.callMethod('setByName', ['session_close']));
   }

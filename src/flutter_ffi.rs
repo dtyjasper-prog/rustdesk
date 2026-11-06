@@ -303,6 +303,17 @@ pub fn will_session_close_close_session(session_id: SessionID) -> SyncReturn<boo
     SyncReturn(sessions::would_remove_peer_by_session_id(&session_id))
 }
 
+/// PhoneKB: mark a session as keyboard-only. Call after `session_add_sync` and before
+/// `session_start`. Synchronous, so it is applied before the login is built.
+pub fn session_set_keyboard_only_sync(session_id: SessionID, keyboard_only: bool) -> SyncReturn<bool> {
+    if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+        session.lc.write().unwrap().keyboard_only = keyboard_only;
+        SyncReturn(true)
+    } else {
+        SyncReturn(false)
+    }
+}
+
 pub fn session_close(session_id: SessionID) {
     if let Some(session) = sessions::remove_session_by_session_id(&session_id) {
         crate::keyboard::shortcuts::clear_session_state(&session_id);

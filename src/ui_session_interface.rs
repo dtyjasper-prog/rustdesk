@@ -304,6 +304,14 @@ impl<T: InvokeUiSession> Session<T> {
         let peer_version = self.get_peer_version();
         let platform = self.peer_platform();
 
+        // PhoneKB: keyboard-only sessions send raw USB HID codes, which only map mode carries
+        // (legacy sends nothing from Android). Not saved, so the normal session's choice is kept.
+        if self.lc.read().unwrap().keyboard_only
+            && is_keyboard_mode_supported(&KeyboardMode::Map, peer_version, &platform)
+        {
+            return KeyboardMode::Map.to_string();
+        }
+
         // Saved keyboard mode still exists in this version.
         if let Ok(mode) = keyboard_mode {
             if is_keyboard_mode_supported(&mode, peer_version, &platform) {
@@ -1839,7 +1847,10 @@ impl<T: InvokeUiSession> Interface for Session<T> {
                 self.msgbox("error", "Error", msg, "");
                 return;
             }
-            if !self.is_view_camera() {
+            // PhoneKB: a keyboard-only session must not change the peer's resolution
+            // or auto-login, the screen belongs to the other viewer.
+            let keyboard_only = self.lc.read().unwrap().keyboard_only;
+            if !self.is_view_camera() && !keyboard_only {
                 self.try_change_init_resolution(pi.current_display);
                 let p = self.lc.read().unwrap().should_auto_login();
                 if !p.is_empty() {
@@ -1863,7 +1874,9 @@ impl<T: InvokeUiSession> Interface for Session<T> {
         // Save recent peers, then push event to flutter. So flutter can refresh peer page.
         self.lc.write().unwrap().handle_peer_info(&pi);
         self.set_peer_info(&pi);
-        if self.is_file_transfer() {
+        if self.is_file_transfer() || self.lc.read().unwrap().keyboard_only {
+            // PhoneKB: keyboard-only sessions never show an image, so skip the
+            // "waiting for image" box (its timer would also try to wake the peer's screen).
             self.close_success();
         } else if !self.is_port_forward() && !self.is_terminal() {
             self.msgbox(
