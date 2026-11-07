@@ -130,6 +130,22 @@ jobs:
           popd
           mv flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk rustdesk-phonekb-${{ env.VERSION }}-arm64.apk
 
+      - name: Re-sign APK with stable key
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.PHONEKB_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.PHONEKB_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KS_B64" ]; then echo "no keystore secret, keep debug signature"; exit 0; fi
+          echo "$KS_B64" | base64 -d > phonekb.jks
+          BT=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" sign --ks phonekb.jks --ks-key-alias phonekb \
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS \
+            --out signed.apk rustdesk-phonekb-${{ env.VERSION }}-arm64.apk
+          "$BT/apksigner" verify signed.apk
+          mv signed.apk rustdesk-phonekb-${{ env.VERSION }}-arm64.apk
+          rm -f phonekb.jks
+
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
