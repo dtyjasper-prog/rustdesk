@@ -1303,7 +1303,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     );
   }
 
-  Widget _tab(bool open, bool left, VoidCallback onTap) {
+  Widget _sideTab(bool open, bool left, VoidCallback onTap) {
     final pointsLeft = left ? open : !open;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1326,9 +1326,10 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
           padding: const EdgeInsets.fromLTRB(6, 0, 6, 8),
           child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             _half(_leftHalf, _leftOpen, hw, true),
-            _tab(_leftOpen, true, () => setState(() => _leftOpen = !_leftOpen)),
+            _sideTab(
+                _leftOpen, true, () => setState(() => _leftOpen = !_leftOpen)),
             Expanded(child: _mousePanel(clutchH: 50, buttonsH: 62)),
-            _tab(_rightOpen, false,
+            _sideTab(_rightOpen, false,
                 () => setState(() => _rightOpen = !_rightOpen)),
             _half(_rightHalf, _rightOpen, hw, false),
           ]),
