@@ -199,7 +199,7 @@ class _K {
 
 // HID usages
 const _ctrl = 0xE0, _shift = 0xE1, _alt = 0xE2, _win = 0xE3;
-const _esc = 0x29, _tab = 0x2B, _caps = 0x39, _enter = 0x28, _bksp = 0x2A;
+const _esc = 0x29, _tab = 0x2B, _capsKey = 0x39, _enter = 0x28, _bksp = 0x2A;
 const _space = 0x2C, _del = 0x4C, _f4 = 0x3D;
 const _home = 0x4A, _end = 0x4D, _pgUp = 0x4B, _pgDn = 0x4E;
 const _up = 0x52, _down = 0x51, _left = 0x50, _right = 0x4F;
@@ -217,7 +217,7 @@ final List<List<_K>> _leftHalf = [
   ],
   [const _K('`', 0x35, sub: '~'), for (var i = 0; i < 6; i++) _digit(i)],
   [const _K('Tab', _tab, flex: 6), ..._letters('QWERT')],
-  [const _K('Caps', _caps, flex: 7), ..._letters('ASDFG')],
+  [const _K('Caps', _capsKey, flex: 7), ..._letters('ASDFG')],
   [const _K.mod('Shift', _shift, flex: 9), ..._letters('ZXCVB')],
   [
     const _K.mod('Ctrl', _ctrl),
@@ -361,7 +361,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   final Set<int> _sentMods = {}; // modifiers currently down on the PC
   final Set<int> _downKeys = {}; // normal keys currently down on the PC
   final Set<_K> _pressedUi = {}; // keys drawn as pressed
-  bool _caps = false;
+  bool _capsOn = false;
   Timer? _repeatTimer;
   int _repeatCode = 0;
 
@@ -446,7 +446,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
       sessionId: _sid,
       character: '',
       usbHid: usb,
-      lockModes: _caps ? (1 << 1) : 0, // CAPS_LOCK bit, see keyboard.rs
+      lockModes: _capsOn ? (1 << 1) : 0, // CAPS_LOCK bit, see keyboard.rs
       downOrUp: down,
     );
   }
@@ -469,13 +469,13 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     final held = _held;
     _chordUsed.addAll(held);
     _modsDown({...held, ..._latched, ..._locked, if (k.shift) _shift});
-    if (code == _caps) _caps = !_caps;
+    if (code == _capsKey) _capsOn = !_capsOn;
     _send(code, true);
     _downKeys.add(code);
     // The PC does not auto-repeat injected keys, so repeat like a real keyboard does.
     _repeatTimer?.cancel();
     _repeatCode = code;
-    if (code != _caps) {
+    if (code != _capsKey) {
       _repeatTimer = Timer(const Duration(milliseconds: 400), () {
         _repeatTimer = Timer.periodic(const Duration(milliseconds: 40), (_) {
           if (_downKeys.contains(_repeatCode)) _send(_repeatCode, true);
@@ -683,7 +683,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
       return _modColor;
     }
     if (_pressedUi.contains(k)) return _downColor;
-    if (k.code == _caps && _caps) return _lockColor;
+    if (k.code == _capsKey && _capsOn) return _lockColor;
     return _keyColor;
   }
 
@@ -1106,7 +1106,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
           ('PgDn', () => _combo([], _pgDn)),
           ('Insert', () => _combo([], 0x49)),
           ('PrtSc', () => _combo([], 0x46)),
-          ('Caps', () => _combo([], _caps)),
+          ('Caps', () => _combo([], _capsKey)),
           ('Esc', () => _combo([], _esc)),
         ]
       ),
