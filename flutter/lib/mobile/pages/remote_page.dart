@@ -25,6 +25,9 @@ import '../../models/shortcut_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../phonekb_relay.dart';
+
+PhoneKbRelayServer? _phoneKbRelay;
 
 final initText = '1' * 1024;
 
@@ -130,12 +133,22 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
+    // PhoneKB: always ask the peer for cursor position updates, so the cursor
+    // moved by the phone keyboard/mouse session is drawn here too.
+    if (!bind.sessionGetToggleOptionSync(
+        sessionId: sessionId, arg: 'show-remote-cursor')) {
+      bind.sessionToggleOption(sessionId: sessionId, value: 'show-remote-cursor');
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       gFFI.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
     WakelockManager.enable(_uniqueKey);
+    // PhoneKB: let a phone on the same network (hotspot / Wi-Fi) type into this
+    // session, so the phone itself needs no Tailscale.
+    _phoneKbRelay =
+        PhoneKbRelayServer(sessionId: sessionId, peerId: widget.id)..start();
     _physicalFocusNode.requestFocus();
     HardwareKeyboard.instance.addHandler(_handleLocalKeyEvent);
     gFFI.inputModel.listenToMouse(true);
@@ -186,6 +199,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   Future<void> dispose() async {
+    unawaited(_phoneKbRelay?.stop());
+    _phoneKbRelay = null;
     HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`

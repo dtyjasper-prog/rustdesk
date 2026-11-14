@@ -388,6 +388,16 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
 
                 }
+                "phonekb_lock_rotation" -> {
+                    // PhoneKB: lock to exactly the current rotation (landscape stays the
+                    // same landscape side), or give rotation back to the sensor/system.
+                    requestedOrientation = if (call.arguments as Boolean) {
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                    } else {
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }
+                    result.success(true)
+                }
                 "try_sync_clipboard" -> {
                     rdClipboardManager?.syncClipboard(true)
                     result.success(true)

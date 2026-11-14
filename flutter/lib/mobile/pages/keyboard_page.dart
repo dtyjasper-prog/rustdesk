@@ -1,4 +1,4 @@
-// PhoneKB: "模拟键盘" — use the phone as a keyboard and a tilt mouse for a remote PC.
+// PhoneKB: "模拟键盘" — use the phone as a keyboard and a touchpad for a remote PC.
 //
 // The session is keyboard-only (see `LoginConfigHandler::keyboard_only` in Rust): it sends real
 // key down/up events (USB HID codes, map mode) and mouse events, drops video/audio without
@@ -22,16 +22,28 @@ import '../../common/formatter/id_formatter.dart';
 import '../../models/model.dart';
 import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
+import '../phonekb_relay.dart';
 import 'home_page.dart';
 
 const _kLastKeyboardPeer = 'phonekb-last-peer';
+const _kLastTablet = 'phonekb-last-tablet';
+const _kHomeMode = 'phonekb-home-mode'; // 'pc' | 'tablet'
 
 // ============================================================================
 // Tab: choose the device
 // ============================================================================
 
 class KeyboardHomePage extends StatefulWidget implements PageShape {
-  KeyboardHomePage({Key? key}) : super(key: key);
+  /// Layout preview for widget tests.
+  final bool preview;
+  final bool previewTablet;
+  final List<FoundTablet> previewTablets;
+  KeyboardHomePage(
+      {Key? key,
+      this.preview = false,
+      this.previewTablet = false,
+      this.previewTablets = const []})
+      : super(key: key);
 
   @override
   final icon = const Icon(Icons.keyboard_alt_outlined);
@@ -48,21 +60,177 @@ class KeyboardHomePage extends StatefulWidget implements PageShape {
 
 class _KeyboardHomePageState extends State<KeyboardHomePage> {
   final _idCtl = TextEditingController();
+  final _tabletCtl = TextEditingController();
   List<Peer> _peers = [];
   Set<String> _favs = {};
   bool _loading = true;
 
+  // "连平板": the phone talks to the tablet, the tablet forwards to the PC.
+  bool _viaTablet = false;
+  bool _scanning = false;
+  List<FoundTablet> _tablets = [];
+
   @override
   void initState() {
     super.initState();
+    if (widget.preview) {
+      _viaTablet = widget.previewTablet;
+      _tablets = widget.previewTablets;
+      _loading = false;
+      _idCtl.text = '100.97.81.22';
+      return;
+    }
     _idCtl.text = bind.mainGetLocalOption(key: _kLastKeyboardPeer);
+    _tabletCtl.text = bind.mainGetLocalOption(key: _kLastTablet);
+    _viaTablet = bind.mainGetLocalOption(key: _kHomeMode) == 'tablet';
     _load();
+    if (_viaTablet) _scan();
   }
 
   @override
   void dispose() {
     _idCtl.dispose();
+    _tabletCtl.dispose();
     super.dispose();
+  }
+
+  void _setMode(bool tablet) {
+    if (tablet == _viaTablet) return;
+    setState(() => _viaTablet = tablet);
+    if (widget.preview) return;
+    bind.mainSetLocalOption(key: _kHomeMode, value: tablet ? 'tablet' : 'pc');
+    if (tablet && _tablets.isEmpty) _scan();
+  }
+
+  Future<void> _scan() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    final found = await scanForTablets();
+    if (!mounted) return;
+    setState(() {
+      _tablets = found;
+      _scanning = false;
+    });
+  }
+
+  void _openTablet(String host) {
+    host = host.trim();
+    if (host.isEmpty) return;
+    bind.mainSetLocalOption(key: _kLastTablet, value: host);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => KeyboardSessionPage(id: host, relayHost: host)),
+    );
+  }
+
+  Widget _modeSwitch(ThemeData theme) {
+    Widget seg(String t, IconData icon, bool tablet) {
+      final sel = _viaTablet == tablet;
+      return Expanded(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => _setMode(tablet),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: sel ? theme.colorScheme.primary : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(icon,
+                  size: 18,
+                  color: sel ? theme.colorScheme.onPrimary : theme.hintColor),
+              const SizedBox(width: 6),
+              Text(t,
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: sel
+                          ? theme.colorScheme.onPrimary
+                          : theme.textTheme.bodyMedium?.color)),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.6),
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Row(children: [
+        seg('直连电脑', Icons.computer_outlined, false),
+        seg('连平板', Icons.tablet_android_outlined, true),
+      ]),
+    );
+  }
+
+  List<Widget> _tabletSection(ThemeData theme) {
+    return [
+      Text(
+        '手机连平板，平板再转给电脑：只要平板开 Tailscale 连着电脑，手机不用开。'
+        '手机和平板要在同一个网络里（比如平板连手机热点）。'
+        '第一次连接时，平板会弹出 6 位配对码，在手机上输入一次即可。',
+        style: theme.textTheme.bodySmall,
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Text('找到的平板', style: theme.textTheme.labelLarge),
+        const Spacer(),
+        TextButton.icon(
+          onPressed: _scanning ? null : _scan,
+          icon: _scanning
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.refresh, size: 18),
+          label: Text(_scanning ? '正在查找…' : '重新查找'),
+        ),
+      ]),
+      if (!_scanning && _tablets.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Text(
+            '没找到。请先在平板上用「RustDesk 键盘」连上电脑并停在远程画面，'
+            '再点「重新查找」；也可以在下面手动填平板的 IP。',
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      ..._tablets.map((t) => Card(
+            child: ListTile(
+              leading: const Icon(Icons.tablet_android_outlined),
+              title: Text(t.name),
+              subtitle: Text('正在控制 ${formatID(t.peer)} · ${t.host}'),
+              trailing: const Icon(Icons.keyboard_arrow_right),
+              onTap: () => _openTablet(t.host),
+            ),
+          )),
+      const SizedBox(height: 16),
+      Row(children: [
+        Expanded(
+          child: TextField(
+            controller: _tabletCtl,
+            keyboardType: TextInputType.visiblePassword,
+            decoration: const InputDecoration(
+              labelText: '手动填平板的 IP',
+              hintText: '例如 192.168.43.120',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onSubmitted: _openTablet,
+          ),
+        ),
+        const SizedBox(width: 10),
+        FilledButton.icon(
+          onPressed: () => _openTablet(_tabletCtl.text),
+          icon: const Icon(Icons.keyboard),
+          label: const Text('连接'),
+        ),
+      ]),
+    ];
   }
 
   Future<void> _load() async {
@@ -108,7 +276,10 @@ class _KeyboardHomePageState extends State<KeyboardHomePage> {
           Text('把手机当成电脑的键盘和鼠标',
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
+          _modeSwitch(theme),
+          const SizedBox(height: 14),
+          if (_viaTablet) ..._tabletSection(theme) else ...[
           Text(
             '只发送按键和鼠标，不接收画面和声音，不改电脑的分辨率和画质。'
             '平板等其他设备可以同时用 RustDesk 显示和控制这台电脑，互不影响。',
@@ -171,6 +342,7 @@ class _KeyboardHomePageState extends State<KeyboardHomePage> {
                 ),
               );
             }),
+          ],
         ],
       ),
     );
@@ -268,25 +440,29 @@ final List<List<_K>> _rightHalf = [
   ],
 ];
 
-// Portrait: phone-style keyboard, with a symbol layer.
-final List<_K> _pTop = [
+// Portrait: laid out like a phone keyboard, with a symbol layer.
+// Slim strip on top: PC keys a phone keyboard lacks, and the arrows.
+final List<_K> _pStripKeys = [
   const _K('Esc', _esc),
   const _K('Tab', _tab),
-  const _K('Home', _home),
-  const _K('End', _end),
-  const _K('PgUp', _pgUp),
-  const _K('PgDn', _pgDn),
+  const _K.mod('Win', _win),
   const _K('Del', _del),
 ];
-final List<_K> _pDigits = [for (var i = 0; i < 10; i++) _digit(i)];
+final List<_K> _pArrows = [
+  const _K('←', _left),
+  const _K('↑', _up),
+  const _K('↓', _down),
+  const _K('→', _right),
+];
+final List<_K> _pDigits = [
+  for (var i = 0; i < 10; i++) _K(i == 9 ? '0' : '${i + 1}', i == 9 ? 0x27 : 0x1E + i)
+];
 final List<List<_K>> _pLetters = [
   _letters('QWERTYUIOP'),
   _letters('ASDFGHJKL'),
   [
-    const _K.mod('Shift', _shift, flex: 6),
+    const _K.mod('⇧', _shift, flex: 6),
     ..._letters('ZXCVBNM'),
-    const _K(',', 0x36, sub: '<'),
-    const _K('.', 0x37, sub: '>'),
     const _K('⌫', _bksp, flex: 6),
   ],
 ];
@@ -308,7 +484,7 @@ final List<List<_K>> _pSymbols = [
     _K('?', 0x38, shift: true),
   ],
   const [
-    _K.mod('Shift', _shift, flex: 6),
+    _K.mod('⇧', _shift, flex: 6),
     _K('~', 0x35, shift: true),
     _K('_', 0x2D, shift: true),
     _K('+', 0x2E, shift: true),
@@ -320,20 +496,31 @@ final List<List<_K>> _pSymbols = [
     _K('⌫', _bksp, flex: 6),
   ],
 ];
-final List<_K> _pArrows = [
-  const _K('←', _left),
-  const _K('↑', _up),
-  const _K('↓', _down),
-  const _K('→', _right),
-];
 
 // ============================================================================
 // Session page
 // ============================================================================
 
+const _kMouseMode = 'phonekb-mouse-mode'; // 'touch' | 'gyro'
+
 class KeyboardSessionPage extends StatefulWidget {
   final String id;
-  const KeyboardSessionPage({Key? key, required this.id}) : super(key: key);
+
+  /// Layout preview for widget tests: no connection, nothing is sent.
+  final bool preview;
+  final bool previewGyro;
+  final bool previewDrawer;
+
+  /// Set: go through the tablet at this address instead of connecting to the PC.
+  final String? relayHost;
+  const KeyboardSessionPage(
+      {Key? key,
+      required this.id,
+      this.relayHost,
+      this.preview = false,
+      this.previewGyro = false,
+      this.previewDrawer = false})
+      : super(key: key);
 
   @override
   State<KeyboardSessionPage> createState() => _KeyboardSessionPageState();
@@ -365,7 +552,23 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   Timer? _repeatTimer;
   int _repeatCode = 0;
 
-  // ---- tilt mouse state ----
+  // ---- touchpad state ----
+  final Map<int, Offset> _pts = {}; // finger id -> last position
+  final _touchDots = ValueNotifier<List<Offset>>(const []);
+  int _gestureMaxPts = 0; // most fingers seen in the current gesture
+  int _gestureStartMs = 0;
+  double _gestureTravel = 0;
+  int _lastTapMs = 0;
+  bool _maybeTapDrag = false; // touched again right after a tap
+  bool _tapDrag = false; // ...and moved: drag with the left button held
+  double _remX = 0, _remY = 0, _scrollAcc = 0;
+  int _lastMoveUs = 0;
+  int _sens = 1; // 0 low, 1 mid, 2 high
+  double _wheelAcc = 0;
+  bool _rotLocked = false;
+
+  // ---- gyro (tilt) mouse state ----
+  bool _gyroMode = false;
   StreamSubscription<AccelerometerEvent>? _accSub;
   double _ax = 0, _ay = 0;
   bool _accReady = false;
@@ -374,12 +577,10 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   int _lastClutchDown = 0;
   bool _landSignPos = true; // landscape: device +x points up
   double _baseR = 0, _baseU = 0;
-  double _remX = 0, _remY = 0;
+  double _tRemX = 0, _tRemY = 0;
   Timer? _tick;
   int _lastTickUs = 0;
-  int _sens = 1; // 0 low, 1 mid, 2 high
   final _tilt = ValueNotifier<Offset>(Offset.zero); // -1..1, for the indicator
-  double _wheelAcc = 0;
 
   Set<int> get _held =>
       _heldCount.entries.where((e) => e.value > 0).map((e) => e.key).toSet();
@@ -389,31 +590,28 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     super.initState();
     SystemChrome.setPreferredOrientations([]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    gFFI.ffiModel.updateEventListener(_sid, widget.id);
-    gFFI.start(widget.id, keyboardOnly: true);
-    WakelockManager.enable(_uniqueKey);
-    WidgetsBinding.instance.addObserver(this);
-    _accSub = accelerometerEventStream(
-            samplingPeriod: SensorInterval.gameInterval)
-        .listen((e) {
-      // Low-pass filter: the accelerometer is noisy, we only want the tilt.
-      if (!_accReady) {
-        _ax = e.x;
-        _ay = e.y;
-        _accReady = true;
+    if (widget.preview) {
+      _gyroMode = widget.previewGyro;
+      _drawerOpen = widget.previewDrawer;
+    } else {
+      if (widget.relayHost != null) {
+        _relay = PhoneKbRelayClient(widget.relayHost!)..connect();
+        _relay!.state.addListener(_onRelayState);
       } else {
-        _ax += (e.x - _ax) * 0.25;
-        _ay += (e.y - _ay) * 0.25;
+        gFFI.ffiModel.updateEventListener(_sid, widget.id);
+        gFFI.start(widget.id, keyboardOnly: true);
       }
-    }, onError: (_) {});
-    _lastTickUs = DateTime.now().microsecondsSinceEpoch;
-    _tick = Timer.periodic(const Duration(milliseconds: 16), (_) => _onTick());
+      WakelockManager.enable(_uniqueKey);
+      _setGyroMode(bind.mainGetLocalOption(key: _kMouseMode) == 'gyro');
+    }
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
       _releaseAll();
+      _padReset();
       _stopMove();
     }
   }
@@ -424,16 +622,32 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     _tick?.cancel();
     _accSub?.cancel();
     _releaseAll();
-    unawaited(bind.sessionClose(sessionId: _sid));
+    _padReset();
+    SystemChrome.setPreferredOrientations([]);
+    final relay = _relay;
+    if (relay != null) {
+      relay.state.removeListener(_onRelayState);
+      relay.close();
+      _relay = null;
+    } else if (!widget.preview) {
+      unawaited(bind.sessionClose(sessionId: _sid));
+    }
     super.dispose();
-    () async {
-      await gFFI.close();
-      gFFI.dialogManager.dismissAll();
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+    if (relay != null) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
           overlays: SystemUiOverlay.values);
       WakelockManager.disable(_uniqueKey);
-    }();
+    } else if (!widget.preview) {
+      () async {
+        await gFFI.close();
+        gFFI.dialogManager.dismissAll();
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+            overlays: SystemUiOverlay.values);
+        WakelockManager.disable(_uniqueKey);
+      }();
+    }
     _textCtl.dispose();
+    _touchDots.dispose();
     _tilt.dispose();
   }
 
@@ -441,7 +655,71 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   // Keyboard sending
   // ==========================================================================
 
+  // ---- via the tablet ----
+  PhoneKbRelayClient? _relay;
+  bool _pinDialogOpen = false;
+
+  void _onRelayState() {
+    final r = _relay;
+    if (r == null || !mounted) return;
+    setState(() {});
+    if (r.state.value == RelayState.needPin) _askPin();
+  }
+
+  Future<void> _askPin() async {
+    if (_pinDialogOpen) return;
+    _pinDialogOpen = true;
+    final ctl = TextEditingController();
+    final rejected = _relay?.pinRejected ?? false;
+    final pin = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('输入配对码'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            rejected
+                ? '配对码不对，请看平板上弹出的 6 位数字。'
+                : '平板上弹出了 6 位配对码，输入一次后会记住。',
+            style: const TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ctl,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 24, letterSpacing: 6),
+            onSubmitted: (v) => Navigator.pop(ctx, v),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctl.text),
+              child: const Text('连接')),
+        ],
+      ),
+    );
+    _pinDialogOpen = false;
+    if (!mounted) return;
+    if (pin == null) {
+      Navigator.pop(context); // gave up: back to the device list
+      return;
+    }
+    _relay?.submitPin(pin);
+  }
+
   void _send(int usb, bool down) {
+    if (widget.preview) return;
+    final relay = _relay;
+    if (relay != null) {
+      relay.key(usb, _capsOn ? (1 << 1) : 0, down);
+      return;
+    }
     bind.sessionHandleFlutterKeyEvent(
       sessionId: _sid,
       character: '',
@@ -565,7 +843,11 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   void _sendText({bool enter = false}) {
     final t = _textCtl.text;
     if (t.isNotEmpty) {
-      bind.sessionInputString(sessionId: _sid, value: t);
+      if (_relay != null) {
+        _relay!.text(t);
+      } else if (!widget.preview) {
+        bind.sessionInputString(sessionId: _sid, value: t);
+      }
       _textCtl.clear();
     }
     if (enter) {
@@ -578,11 +860,152 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   // ==========================================================================
 
   void _mouse(Map<String, String> m) {
+    if (widget.preview) return;
+    final relay = _relay;
+    if (relay != null) {
+      relay.mouse(m);
+      return;
+    }
     bind.sessionSendMouse(sessionId: _sid, msg: json.encode(m));
   }
 
   void _button(String b, bool down) =>
       _mouse({'type': down ? 'down' : 'up', 'buttons': b});
+
+  void _click(String b) {
+    HapticFeedback.selectionClick();
+    _button(b, true);
+    _button(b, false);
+  }
+
+  // ---- touchpad, works like a laptop touchpad ----
+  // one finger: move · tap: left click · two-finger tap: right click
+  // two fingers: scroll · tap then touch again and move: drag
+
+  void _padReset() {
+    if (_tapDrag) _button('left', false);
+    _tapDrag = false;
+    _maybeTapDrag = false;
+    _pts.clear();
+    _touchDots.value = const [];
+  }
+
+  void _padDown(PointerDownEvent e) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_pts.isEmpty) {
+      _gestureMaxPts = 0;
+      _gestureStartMs = now;
+      _gestureTravel = 0;
+      _remX = 0;
+      _remY = 0;
+      _scrollAcc = 0;
+      _maybeTapDrag = now - _lastTapMs < 280;
+    } else {
+      _maybeTapDrag = false;
+    }
+    _pts[e.pointer] = e.localPosition;
+    _gestureMaxPts = math.max(_gestureMaxPts, _pts.length);
+    _lastMoveUs = e.timeStamp.inMicroseconds;
+    _touchDots.value = _pts.values.toList();
+  }
+
+  void _padMove(PointerMoveEvent e) {
+    final old = _pts[e.pointer];
+    if (old == null) return;
+    _pts[e.pointer] = e.localPosition;
+    _touchDots.value = _pts.values.toList();
+    final d = e.localPosition - old;
+    _gestureTravel += d.distance;
+    if (_pts.length == 1 && _gestureMaxPts == 1) {
+      if (_maybeTapDrag && !_tapDrag && _gestureTravel > 6) {
+        _tapDrag = true;
+        _button('left', true);
+        HapticFeedback.lightImpact();
+      }
+      final us = e.timeStamp.inMicroseconds;
+      final dt = ((us - _lastMoveUs) / 1e6).clamp(0.002, 0.1);
+      _lastMoveUs = us;
+      // Pointer acceleration: slow finger = precise, fast finger = goes far.
+      final v = d.distance / dt; // logical px per second
+      final gain =
+          const [1.0, 1.6, 2.4][_sens] * (1 + math.min(v / 900, 2.5));
+      _remX += d.dx * gain;
+      _remY += d.dy * gain;
+      final x = _remX.truncate(), y = _remY.truncate();
+      _remX -= x;
+      _remY -= y;
+      if (x != 0 || y != 0) {
+        _mouse({'type': 'move_relative', 'x': '$x', 'y': '$y'});
+      }
+    } else if (_pts.length >= 2) {
+      // Two fingers scroll; the content follows the fingers, like a laptop touchpad.
+      _scrollAcc += d.dy / _pts.length;
+      const step = 14.0;
+      while (_scrollAcc.abs() >= step) {
+        final dir = _scrollAcc > 0 ? 1 : -1; // fingers down = scroll up
+        _mouse({'type': 'wheel', 'y': '$dir'});
+        _scrollAcc -= dir * step;
+      }
+    }
+  }
+
+  void _padUp(PointerEvent e, {bool cancel = false}) {
+    if (_pts.remove(e.pointer) == null) return;
+    _touchDots.value = _pts.values.toList();
+    if (_pts.isNotEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final quick = now - _gestureStartMs < 260;
+    if (_tapDrag) {
+      _tapDrag = false;
+      _button('left', false);
+    } else if (!cancel && quick && _gestureMaxPts == 1 && _gestureTravel < 10) {
+      _click('left');
+      _lastTapMs = now;
+      return;
+    } else if (!cancel && quick && _gestureMaxPts == 2 && _gestureTravel < 24) {
+      _click('right');
+    }
+    _lastTapMs = 0;
+  }
+
+  void _toggleRotLock() {
+    setState(() => _rotLocked = !_rotLocked);
+    if (widget.preview) return;
+    // Native SCREEN_ORIENTATION_LOCKED keeps exactly the current rotation; Flutter's
+    // landscapeLeft/Right mapping was flipping some Xiaomi phones back to portrait.
+    gFFI.invokeMethod('phonekb_lock_rotation', _rotLocked);
+  }
+
+  // ---- gyro mode: hold the clutch and tilt the phone ----
+
+  void _setGyroMode(bool on) {
+    _gyroMode = on;
+    _accSub?.cancel();
+    _accSub = null;
+    _tick?.cancel();
+    _tick = null;
+    _stopMove();
+    _padReset();
+    if (widget.preview) return;
+    bind.mainSetLocalOption(key: _kMouseMode, value: on ? 'gyro' : 'touch');
+    if (!on) return;
+    _accReady = false;
+    _accSub = accelerometerEventStream(
+            samplingPeriod: SensorInterval.gameInterval)
+        .listen((e) {
+      // Low-pass filter: the accelerometer is noisy, we only want the tilt.
+      if (!_accReady) {
+        _ax = e.x;
+        _ay = e.y;
+        _accReady = true;
+      } else {
+        _ax += (e.x - _ax) * 0.25;
+        _ay += (e.y - _ay) * 0.25;
+      }
+    }, onError: (_) {});
+    _lastTickUs = DateTime.now().microsecondsSinceEpoch;
+    _tick = Timer.periodic(const Duration(milliseconds: 16), (_) => _onTick());
+  }
 
   // Screen axes as seen by the accelerometer: R points to the screen's right,
   // U to the screen's top. A reading drops along an axis that tilts downwards.
@@ -596,8 +1019,8 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     final (r, u) = _axes();
     _baseR = r;
     _baseU = u;
-    _remX = 0;
-    _remY = 0;
+    _tRemX = 0;
+    _tRemY = 0;
     _moving = true;
   }
 
@@ -628,11 +1051,11 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     _tilt.value = Offset(vx, vy);
     if (!_moving) return;
     final speed = const [700.0, 1400.0, 2400.0][_sens]; // px per second at full tilt
-    _remX += vx * speed * dt;
-    _remY += vy * speed * dt;
-    final x = _remX.truncate(), y = _remY.truncate();
-    _remX -= x;
-    _remY -= y;
+    _tRemX += vx * speed * dt;
+    _tRemY += vy * speed * dt;
+    final x = _tRemX.truncate(), y = _tRemY.truncate();
+    _tRemX -= x;
+    _tRemY -= y;
     if (x != 0 || y != 0) {
       _mouse({'type': 'move_relative', 'x': '$x', 'y': '$y'});
     }
@@ -672,7 +1095,6 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   static const _lockColor = Color(0xFFD9822B);
   static const _green = Color(0xFF30D158);
   static const _textColor = Color(0xFFF2F2F7);
-  static const _subColor = Color(0xFF7C7E86);
   static const _dimColor = Color(0xFF6E7078);
 
   Color _colorOf(_K k) {
@@ -684,13 +1106,28 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     }
     if (_pressedUi.contains(k)) return _downColor;
     if (k.code == _capsKey && _capsOn) return _lockColor;
-    return _keyColor;
+    // Like a phone keyboard: characters light, function keys dark.
+    return _isFnLike(k) ? _modColor : _charColor;
   }
+
+  static const _charColor = Color(0xFF393B41);
 
   bool _isFnLike(_K k) =>
       k.isMod ||
-      k.label.length > 1 && k.code != _space && !k.label.startsWith('F') ||
-      const [_up, _down, _left, _right].contains(k.code);
+      k.label.length > 1 && k.code != _space ||
+      const [_up, _down, _left, _right, _bksp, _enter].contains(k.code);
+
+  bool get _upperCase {
+    final shift = _held.contains(_shift) ||
+        _latched.contains(_shift) ||
+        _locked.contains(_shift);
+    return shift != _capsOn;
+  }
+
+  String _shown(_K k) {
+    final letter = k.label.length == 1 && k.code >= 0x04 && k.code <= 0x1D;
+    return letter && !_upperCase ? k.label.toLowerCase() : k.label;
+  }
 
   Widget _key(_K k) {
     void up() => setState(() {
@@ -720,38 +1157,41 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
         onPointerCancel: (_) => up(),
         child: LayoutBuilder(builder: (context, c) {
           final h = c.maxHeight;
-          final fn = _isFnLike(k) && !k.isMod;
-          final mainSize = (k.label.length > 2 || fn || k.isMod)
-              ? (h * 0.27).clamp(9.0, 15.0)
-              : (h * 0.40).clamp(10.0, 22.0);
+          final word = k.label.length > 2; // Ctrl, Enter, F10 ...
+          final glyph = !word && k.label.length == 1 && !k.isMod;
+          final mainSize = word
+              ? (h * 0.30).clamp(10.0, 15.0)
+              : glyph
+                  ? (h * 0.46).clamp(12.0, 24.0)
+                  : (h * 0.36).clamp(11.0, 19.0);
           return Container(
-            margin: const EdgeInsets.all(2),
+            margin: const EdgeInsets.symmetric(horizontal: 2.5, vertical: 3),
             decoration: BoxDecoration(
               color: _colorOf(k),
-              borderRadius: BorderRadius.circular(7),
-              border: const Border(
-                  bottom: BorderSide(color: Color(0xFF1C1D21), width: 2)),
+              borderRadius: BorderRadius.circular(6),
+              boxShadow: const [
+                BoxShadow(color: Color(0x8C000000), offset: Offset(0, 1)),
+              ],
             ),
             alignment: Alignment.center,
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              if (k.sub.isNotEmpty)
-                Text(k.sub,
-                    style: TextStyle(
-                        color: _subColor,
-                        fontSize: (h * 0.22).clamp(8.0, 12.0),
-                        height: 1.0)),
-              Text(k.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  style: TextStyle(
-                    color: k.code == _space
-                        ? const Color(0xFF5D5F66)
-                        : (k.isMod ? const Color(0xFFC7C7CC) : _textColor),
-                    fontSize: mainSize,
-                    fontWeight: k.isMod ? FontWeight.w600 : FontWeight.w400,
-                    height: 1.05,
-                  )),
-            ]),
+            child: k.code == _bksp || k.label == '⇧'
+                ? Icon(
+                    k.code == _bksp
+                        ? Icons.backspace_outlined
+                        : (_upperCase
+                            ? Icons.arrow_circle_up
+                            : Icons.arrow_upward_rounded),
+                    size: (h * 0.42).clamp(14.0, 22.0),
+                    color: const Color(0xFFD1D1D6))
+                : Text(k.code == _space ? '' : _shown(k),
+                maxLines: 1,
+                overflow: TextOverflow.clip,
+                style: TextStyle(
+                  color: _isFnLike(k) ? const Color(0xFFD1D1D6) : _textColor,
+                  fontSize: mainSize,
+                  fontWeight: FontWeight.w400,
+                  height: 1.05,
+                )),
           );
         }),
       ),
@@ -800,31 +1240,27 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
       child: Row(children: [
         _iconBtn(Icons.close, () => Navigator.pop(context)),
         const SizedBox(width: 8),
-        Obx(() {
-          final ok = gFFI.ffiModel.pi.isSet.value;
-          final kbOff = gFFI.ffiModel.permissions['keyboard'] == false;
-          final color = !ok ? const Color(0xFFFF9F0A) : (kbOff ? const Color(0xFFFF453A) : _green);
-          final text = !ok
-              ? '正在连接…'
-              : (kbOff ? '电脑端关闭了键鼠权限' : formatID(widget.id));
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            decoration: BoxDecoration(
-                color: _btn, borderRadius: BorderRadius.circular(16)),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                  width: 8,
-                  height: 8,
-                  decoration:
-                      BoxDecoration(color: color, shape: BoxShape.circle)),
-              const SizedBox(width: 7),
-              Text(text,
-                  style:
-                      const TextStyle(color: Color(0xFFD1D1D6), fontSize: 13)),
-            ]),
-          );
-        }),
+        if (widget.preview)
+          _statusChip(_green, widget.id)
+        else if (_relay != null)
+          Flexible(child: _relayChip(_relay!))
+        else
+          Obx(() {
+            final ok = gFFI.ffiModel.pi.isSet.value;
+            final kbOff = gFFI.ffiModel.permissions['keyboard'] == false;
+            final color = !ok
+                ? const Color(0xFFFF9F0A)
+                : (kbOff ? const Color(0xFFFF453A) : _green);
+            final text = !ok
+                ? '正在连接…'
+                : (kbOff ? '电脑端关闭了键鼠权限' : formatID(widget.id));
+            return _statusChip(color, text);
+          }),
         const Spacer(),
+        _iconBtn(
+            _rotLocked ? Icons.screen_lock_rotation : Icons.screen_rotation,
+            _toggleRotLock,
+            on: _rotLocked),
         if (_landscape)
           _iconBtn(Icons.keyboard_outlined, () {
             setState(() {
@@ -839,6 +1275,43 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
         const SizedBox(width: 6),
       ]),
     );
+  }
+
+  Widget _relayChip(PhoneKbRelayClient r) {
+    final name = r.tabletName.isEmpty ? r.host : r.tabletName;
+    switch (r.state.value) {
+      case RelayState.connected:
+        return _statusChip(_green, '经 $name → ${formatID(r.tabletPeer)}');
+      case RelayState.needPin:
+        return _statusChip(const Color(0xFFFF453A), '等待配对码');
+      case RelayState.lost:
+        return _statusChip(const Color(0xFFFF9F0A), '平板断开，重连中…');
+      case RelayState.connecting:
+        return _statusChip(const Color(0xFFFF9F0A), '正在连接平板…');
+    }
+  }
+
+  Widget _statusChip(Color color, String text) {
+    return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+                color: _btn, borderRadius: BorderRadius.circular(16)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(color: color, shape: BoxShape.circle)),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xFFD1D1D6), fontSize: 13)),
+              ),
+            ]),
+          );
   }
 
   Widget _textRow() {
@@ -870,19 +1343,95 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
 
   // ---- mouse panel ----
 
-  Widget _tiltPad() {
+  // The pad fills the whole middle area: touchpad or tilt indicator, with the
+  // mode switch and the sensitivity chip on top.
+  Widget _padArea() {
     return Container(
       decoration: BoxDecoration(
-          color: _panel, borderRadius: BorderRadius.circular(16)),
-      child: LayoutBuilder(builder: (context, c) {
-        final r = math.min(c.maxWidth, c.maxHeight) * 0.4;
-        return Stack(alignment: Alignment.center, children: [
+          color: _panel,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF202227))),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(15),
+        child: Stack(fit: StackFit.expand, children: [
+          if (_gyroMode) _tiltBody() else ..._touchBody(),
+          Positioned(
+            top: 7,
+            left: 8,
+            right: 8,
+            child: Row(children: [
+              _modeSwitch(),
+              const Spacer(),
+              _sensChip(),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  List<Widget> _touchBody() => [
+        Positioned.fill(
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: _padDown,
+            onPointerMove: _padMove,
+            onPointerUp: (e) => _padUp(e),
+            onPointerCancel: (e) => _padUp(e, cancel: true),
+            child: CustomPaint(painter: _DotGridPainter()),
+          ),
+        ),
+        const Positioned.fill(
+          child: IgnorePointer(
+            child: Center(
+              child: Text(
+                '单指滑动 移动 · 轻点 左键\n双指轻点 右键 · 双指滑动 滚动\n点一下再按住滑动 拖拽',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: Color(0xFF45474F), fontSize: 12, height: 1.7),
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: ValueListenableBuilder<List<Offset>>(
+              valueListenable: _touchDots,
+              builder: (context, dots, _) => Stack(children: [
+                for (final p in dots)
+                  Positioned(
+                    left: p.dx - 22,
+                    top: p.dy - 22,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _downColor.withOpacity(0.18),
+                        border: Border.all(
+                            color: _downColor.withOpacity(0.6), width: 1.5),
+                      ),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
+        ),
+      ];
+
+  Widget _tiltBody() {
+    return LayoutBuilder(builder: (context, c) {
+      // Leave room for the header row.
+      final r = math.min(c.maxWidth, c.maxHeight - 44) * 0.42;
+      return Padding(
+        padding: const EdgeInsets.only(top: 36),
+        child: Stack(alignment: Alignment.center, children: [
           Container(
             width: r * 2,
             height: r * 2,
             decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xFF23252A))),
+                border: Border.all(color: const Color(0xFF2A2C32))),
           ),
           Container(
             width: r * 0.55,
@@ -890,8 +1439,8 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
             decoration: const BoxDecoration(
                 shape: BoxShape.circle, color: Color(0xFF1D1F24)),
           ),
-          Container(width: 1, height: r * 2, color: const Color(0xFF202226)),
-          Container(height: 1, width: r * 2, color: const Color(0xFF202226)),
+          Container(width: 1, height: r * 2, color: const Color(0xFF24262B)),
+          Container(height: 1, width: r * 2, color: const Color(0xFF24262B)),
           ValueListenableBuilder<Offset>(
             valueListenable: _tilt,
             builder: (context, t, _) => Transform.translate(
@@ -907,29 +1456,58 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
               ),
             ),
           ),
-          const Positioned(
-              top: 9,
-              left: 12,
-              child: Text('倾斜', style: TextStyle(color: _dimColor, fontSize: 12))),
-          Positioned(
-            top: 7,
-            right: 9,
-            child: GestureDetector(
-              onTap: () => setState(() => _sens = (_sens + 1) % 3),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                    color: const Color(0xFF1F2125),
-                    borderRadius: BorderRadius.circular(10)),
-                child: Text('灵敏度 ${const ['低', '中', '高'][_sens]}',
-                    style: const TextStyle(
-                        color: Color(0xFF9A9CA4), fontSize: 12)),
-              ),
-            ),
+        ]),
+      );
+    });
+  }
+
+  Widget _modeSwitch() {
+    Widget seg(String text, bool sel, bool gyro) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            if (_gyroMode == gyro) return;
+            HapticFeedback.selectionClick();
+            setState(() => _setGyroMode(gyro));
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+                color: sel ? const Color(0xFF16324F) : Colors.transparent,
+                borderRadius: BorderRadius.circular(8)),
+            child: Text(text,
+                style: TextStyle(
+                    color: sel ? const Color(0xFF8CC4FF) : const Color(0xFF8E8E93),
+                    fontSize: 12.5,
+                    fontWeight: sel ? FontWeight.w600 : FontWeight.w400)),
           ),
-        ]);
-      }),
+        );
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+          color: const Color(0xFF1F2125),
+          borderRadius: BorderRadius.circular(10)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        seg('触控板', !_gyroMode, false),
+        seg('陀螺仪', _gyroMode, true),
+      ]),
+    );
+  }
+
+  Widget _sensChip() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _sens = (_sens + 1) % 3);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+            color: const Color(0xFF1F2125),
+            borderRadius: BorderRadius.circular(10)),
+        child: Text('灵敏度 ${const ['低', '中', '高'][_sens]}',
+            style: const TextStyle(color: Color(0xFF9A9CA4), fontSize: 12)),
+      ),
     );
   }
 
@@ -952,12 +1530,16 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
           Icon(Icons.open_with,
               size: 22, color: on ? const Color(0xFF0B2A12) : Colors.white),
           const SizedBox(width: 10),
-          Text(
-            _moveLocked ? '常开中（点一下关闭）' : (on ? '移动中' : '按住移动 · 双击常开'),
-            style: TextStyle(
-                color: on ? const Color(0xFF0B2A12) : Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w600),
+          Flexible(
+            child: Text(
+              _moveLocked ? '常开中（点一下关闭）' : (on ? '移动中' : '按住移动 · 双击常开'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: on ? const Color(0xFF0B2A12) : Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600),
+            ),
           ),
         ]),
       ),
@@ -1042,12 +1624,15 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     );
   }
 
-  Widget _mousePanel({required double clutchH, required double buttonsH}) {
-    return Column(children: [
-      Expanded(child: _tiltPad()),
+  Widget _mousePanel({required double buttonsH, required double clutchH}) {
+    // stretch: children take the full width of the middle area.
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Expanded(child: _padArea()),
       const SizedBox(height: 8),
-      _clutch(clutchH),
-      const SizedBox(height: 8),
+      if (_gyroMode) ...[
+        _clutch(clutchH),
+        const SizedBox(height: 8),
+      ],
       SizedBox(
         height: buttonsH,
         child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -1081,14 +1666,24 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
       (
         '系统',
         [
-          ('Ctrl+Alt+Del', () => bind.sessionCtrlAltDel(sessionId: _sid)),
+          (
+            'Ctrl+Alt+Del',
+            () => _relay != null
+                ? _relay!.ctrlAltDel()
+                : bind.sessionCtrlAltDel(sessionId: _sid)
+          ),
           ('任务管理器', () => _combo([_ctrl, _shift], _esc)),
           ('Alt+Tab', () => _combo([_alt], _tab)),
           ('回桌面', () => _combo([_win], _letter('d'))),
           ('截图', () => _combo([_win, _shift], _letter('s'))),
           ('关窗口', () => _combo([_alt], _f4)),
           ('资源管理器', () => _combo([_win], _letter('e'))),
-          ('锁屏', () => bind.sessionLockScreen(sessionId: _sid)),
+          (
+            '锁屏',
+            () => _relay != null
+                ? _relay!.lockScreen()
+                : bind.sessionLockScreen(sessionId: _sid)
+          ),
         ]
       ),
       (
@@ -1178,11 +1773,6 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
   Widget _portrait(Size size) {
     final kbH = size.height * 0.44;
     final rows = _symLayer ? _pSymbols : _pLetters;
-    final modRow = <_K>[
-      const _K.mod('Ctrl', _ctrl),
-      const _K.mod('Win', _win),
-      const _K.mod('Alt', _alt),
-    ];
     return Column(children: [
       _topBar(),
       if (_showText) _textRow(),
@@ -1190,8 +1780,8 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 2, 12, 10),
           child: _mousePanel(
-              clutchH: _drawerOpen ? 54 : 70,
-              buttonsH: _drawerOpen ? 62 : 100),
+              buttonsH: _drawerOpen ? 60 : 84,
+              clutchH: _drawerOpen ? 50 : 64),
         ),
       ),
       AnimatedContainer(
@@ -1238,42 +1828,62 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
                   child: Column(children: [
-                    _row(_pTop, flex: 8),
+                    // Slim strip: Esc Tab Win Del, then the arrows on the right.
+                    Expanded(
+                      flex: 7,
+                      child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            ..._pStripKeys.map(_key),
+                            const SizedBox(width: 10),
+                            ..._pArrows.map(_key),
+                          ]),
+                    ),
                     _row(_pDigits),
                     _row(rows[0]),
-                    _row(rows[1], pad: _symLayer ? 0 : size.width * 0.04),
+                    _row(rows[1], pad: _symLayer ? 0 : size.width * 0.05),
                     _row(rows[2]),
                     Expanded(
                       flex: 10,
                       child: Row(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            ...modRow.map(_key),
                             Expanded(
-                              flex: 4,
+                              flex: 5,
                               child: GestureDetector(
                                 behavior: HitTestBehavior.opaque,
-                                onTap: () =>
-                                    setState(() => _symLayer = !_symLayer),
+                                onTap: () {
+                                  HapticFeedback.selectionClick();
+                                  setState(() => _symLayer = !_symLayer);
+                                },
                                 child: Container(
-                                  margin: const EdgeInsets.all(2),
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 2.5, vertical: 3),
                                   decoration: BoxDecoration(
-                                      color: _symLayer ? _latchColor : _modColor,
-                                      borderRadius: BorderRadius.circular(7)),
+                                    color: _symLayer ? _latchColor : _modColor,
+                                    borderRadius: BorderRadius.circular(6),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                          color: Color(0x8C000000),
+                                          offset: Offset(0, 1)),
+                                    ],
+                                  ),
                                   alignment: Alignment.center,
                                   child: Text(_symLayer ? 'ABC' : '符',
                                       style: const TextStyle(
-                                          color: Color(0xFFC7C7CC),
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600)),
+                                          color: Color(0xFFD1D1D6),
+                                          fontSize: 14)),
                                 ),
                               ),
                             ),
-                            _key(const _K('space', _space, flex: 12)),
+                            _key(const _K.mod('Ctrl', _ctrl, flex: 5)),
+                            _key(const _K.mod('Alt', _alt, flex: 5)),
+                            _key(const _K(',', 0x36)),
+                            _key(const _K('space', _space, flex: 14)),
+                            _key(const _K('.', 0x37)),
                             _key(const _K('Enter', _enter, flex: 7)),
                           ]),
                     ),
-                    _row(_pArrows, flex: 8, pad: size.width * 0.2),
                   ]),
                 ),
               ),
@@ -1328,7 +1938,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
             _half(_leftHalf, _leftOpen, hw, true),
             _sideTab(
                 _leftOpen, true, () => setState(() => _leftOpen = !_leftOpen)),
-            Expanded(child: _mousePanel(clutchH: 50, buttonsH: 62)),
+            Expanded(child: _mousePanel(buttonsH: 60, clutchH: 50)),
             _sideTab(_rightOpen, false,
                 () => setState(() => _rightOpen = !_rightOpen)),
             _half(_rightHalf, _rightOpen, hw, false),
@@ -1344,7 +1954,7 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
     final land = size.width > size.height;
     if (land != _landscape) {
       _landscape = land;
-      if (_moving) _startMove(); // re-zero after rotating
+      if (_moving) _startMove(); // re-zero the tilt after rotating
     }
     return Scaffold(
       backgroundColor: _bg,
@@ -1355,6 +1965,23 @@ class _KeyboardSessionPageState extends State<KeyboardSessionPage>
       ),
     );
   }
+}
+
+/// Faint dot grid, so the touchpad reads as a surface.
+class _DotGridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()..color = const Color(0xFF1F2126);
+    const gap = 22.0;
+    for (var y = gap; y < size.height; y += gap) {
+      for (var x = gap; x < size.width; x += gap) {
+        canvas.drawCircle(Offset(x, y), 1.2, p);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 /// A box that reports pointer down/up and redraws while pressed.
